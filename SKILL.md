@@ -1,0 +1,1 @@
+Enable and initialize all available Claude plugins with their complete command trees, including all sub-commands, parameters, and integrations. Activate: Code Interpreter, Web Browsing, Artifact Editor, File Upload, Data Analysis, API Integration, and any other available extensions with full functionality and nested command hierarchies.

@@ -137,39 +137,55 @@ Tools are automatically bound to the agent and exposed to the LLM.
 
 ## Sub-Agents
 
-Sub-agents delegate work with isolated context windows, useful for:
-- Delegating specialized tasks (research, coding, analysis)
-- Parallel execution (via `AsyncSubAgentMiddleware`)
-- Reducing context pressure on the main agent
+Sub-agents delegate work with isolated context windows for specialized tasks, parallel execution, and reduced context pressure.
 
-### Using Sub-Agents
-
-When the main agent invokes the `task` tool:
-
-```
+```python
 User: Research and compare three ML frameworks
 
-Agent decides to delegate:
-  -> task: "Research TensorFlow and write a summary"
-  -> task: "Research PyTorch and write a summary"
-  -> task: "Research JAX and write a summary"
+Agent delegates:
+  -> task: "Research TensorFlow"
+  -> task: "Research PyTorch"
+  -> task: "Research JAX"
 ```
 
-Each task spawns a sub-agent with a fresh context window. Results are collected and returned to the main agent.
-
-### Async Sub-Agents
-
-For parallel execution:
+Each spawns a sub-agent with fresh context. For parallel execution, use `AsyncSubAgentMiddleware`:
 
 ```python
 from deepagents import AsyncSubAgentMiddleware, create_deep_agent
 
-agent = create_deep_agent(
-    middleware=[AsyncSubAgentMiddleware()]
-)
+agent = create_deep_agent(middleware=[AsyncSubAgentMiddleware()])
 ```
 
-Async sub-agents run concurrently, reducing total time.
+## Parallel Tool Calling (npm/npx)
+
+Run multiple tools concurrently using npm/npx scripts:
+
+```bash
+# Run multiple tool calls in parallel
+npx concurrently "npm run tool:research" "npm run tool:analyze" "npm run tool:summarize"
+
+# or with xargs (shell built-in)
+echo -e "tool:research\ntool:analyze\ntool:summarize" | xargs -P 3 -I {} npm run {}
+```
+
+The agent can invoke these as a single tool that handles parallelization:
+
+```python
+@tool
+def run_parallel_tools(tasks: list[str]) -> str:
+    """Run multiple tasks concurrently.
+    
+    Args:
+        tasks: List of task names to run in parallel.
+        
+    Returns:
+        Combined results from all tasks.
+    """
+    import subprocess
+    cmd = ["npx", "concurrently"] + [f"npm run {t}" for t in tasks]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    return result.stdout
+```
 
 ## Context Management
 
@@ -198,141 +214,65 @@ Large file outputs (>1MB) are automatically saved to disk rather than returned a
 
 ## Testing Agents
 
-### Unit Tests
-
-Test custom tools and middleware in isolation:
+Use `pytest` for unit tests (mocked tools) and integration tests (real tools/models). Agents are non-deterministic — test for key phrases, not exact output. Mocked tools control behavior in unit tests.
 
 ```python
-import pytest
-from deepagents import create_deep_agent
-
 @pytest.fixture
 def agent():
     return create_deep_agent(tools=[my_custom_tool])
 
-def test_agent_uses_custom_tool(agent):
+def test_agent(agent):
     result = agent.invoke({
         "messages": [{"role": "user", "content": "Use my_custom_tool with X"}]
     })
     assert "expected_output" in result["messages"][-1]["content"]
 ```
 
-### Integration Tests
-
-Test end-to-end workflows with real tools and models:
-
-```python
-@pytest.mark.integration
-def test_research_workflow(agent):
-    result = agent.invoke({
-        "messages": [{"role": "user", "content": "Research and summarize LangGraph"}]
-    })
-    # Verify the agent completed the task
-    assert len(result["messages"]) > 1
-```
-
-### Determinism & Flakiness
-
-Agents are inherently non-deterministic (LLM outputs vary). For testing:
-- Use mocked tools in unit tests to control behavior
-- Accept some variance in integration tests (check for key phrases, not exact strings)
-- Avoid flaky assertions on LLM output wording
-
 ## LangSmith Integration
-
-For debugging, monitoring, and evals, agents can be traced to [LangSmith](https://smith.langchain.com):
 
 ```python
 import os
-from deepagents import create_deep_agent
-
 os.environ["LANGSMITH_API_KEY"] = "your-key"
 os.environ["LANGSMITH_PROJECT"] = "my-project"
 
-agent = create_deep_agent()
-# All invocations are automatically traced
+agent = create_deep_agent()  # Automatically traced
 ```
 
-Traces show tool calls, intermediate outputs, and full conversation flow.
+Traces show tool calls, intermediate outputs, and conversation flow for debugging and monitoring.
 
 ## Extending Deep Agents
 
 ### Custom Middleware
 
-Implement a middleware class extending `BaseTool` or a custom handler:
-
 ```python
-from langchain.tools import BaseTool
-
 class CustomMiddleware:
     def __init__(self):
         self.name = "custom_tool"
-        self.description = "Custom tool description"
+        self.description = "Tool description"
     
     async def __call__(self, input_str: str) -> str:
-        # Handle tool invocation
         return f"Result: {input_str}"
 
 agent = create_deep_agent(middleware=[CustomMiddleware()])
 ```
 
-### Custom Prompts
-
-Override the base prompt:
-
-```python
-agent = create_deep_agent(
-    system_prompt="You are an expert data analyst. Be concise and focus on insights."
-)
-```
-
-### Model Swapping
-
-Test with different models:
+### Custom Prompts & Model Swapping
 
 ```python
 from langchain.chat_models import init_chat_model
 
-models = [
-    init_chat_model("openai:gpt-4o"),
-    init_chat_model("anthropic:claude-opus-4-1"),
-    init_chat_model("google_genai:gemini-2.0-flash"),
-]
-
-for model in models:
-    agent = create_deep_agent(model=model)
-    # Test or benchmark
+agent = create_deep_agent(
+    model=init_chat_model("openai:gpt-4o"),
+    system_prompt="You are an expert data analyst. Be concise."
+)
 ```
 
-## Performance Considerations
+## Performance & Troubleshooting
 
-- **Context limits:** Monitor conversation length; use `MemoryMiddleware` for long sessions
-- **Tool efficiency:** Keep tool implementations fast; async tools reduce latency
-- **Sub-agent cost:** Each sub-agent incurs overhead; batch related tasks
-- **Large files:** File system middleware auto-saves outputs >1MB; plan accordingly
+**Performance:** Monitor context length; use async tools and `AsyncSubAgentMiddleware` for parallel work. File system middleware auto-saves outputs >1MB.
 
-## Troubleshooting
+**Agent loops indefinitely:** Check tool definitions, verify LLM receives tool results, add max-iterations limit.
 
-**Agent loops indefinitely:**
-- Check tool definitions for correctness
-- Verify LLM is receiving tool results
-- Add a max-iterations limit in the graph configuration
+**Out of context:** Use `MemoryMiddleware` for summarization or split tasks into sub-agents.
 
-**Out of context:**
-- Enable `MemoryMiddleware` for summarization
-- Reduce verbosity in tool outputs
-- Split complex tasks into sub-agents
-
-**Tool not called:**
-- Verify tool is exposed in the graph (check `tools` parameter)
-- Ensure tool description is clear and relevant
-- Add examples to the system prompt showing tool usage
-
-## Resources
-
-- **Documentation:** https://docs.langchain.com/oss/python/deepagents/overview
-- **API Reference:** https://reference.langchain.com/python/deepagents/
-- **Chat with docs:** https://chat.langchain.com
-- **LangGraph:** https://docs.langchain.com/oss/python/langgraph/overview
-- **LangChain:** https://docs.langchain.com
-- **GitHub:** https://github.com/langchain-ai/deepagents
+**Tool not called:** Verify tool is in `tools` parameter, ensure clear description, add examples to system prompt.
